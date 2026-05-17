@@ -1,0 +1,12 @@
+(* Lexer baja complejidad *)
+
+let letter = ['a'-'z' 'A'-'Z']
+let digit  = ['0'-'9']
+
+rule tokens =
+    letter (letter | digit)*   { return ID }
+  | '+'                        { return PLUS }
+  | '*'                        { return TIMES }
+  | '('                        { return LPAREN }
+  | ')'                        { return RPAREN }
+  | [' ' '\t' '\n']+           { return WS }

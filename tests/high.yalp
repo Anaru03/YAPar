@@ -1,0 +1,34 @@
+/* Alta complejidad: expresiones con operadores y comparaciones */
+
+%token PLUS MINUS TIMES DIV LPAREN RPAREN ID NUM
+%token EQ NEQ LT GT
+%token WS
+IGNORE WS
+
+%%
+
+expr:
+    expr PLUS  term
+  | expr MINUS term
+  | term
+;
+
+term:
+    term TIMES factor
+  | term DIV   factor
+  | factor
+;
+
+factor:
+    LPAREN expr RPAREN
+  | ID
+  | NUM
+;
+
+cmpexpr:
+    expr EQ  expr
+  | expr NEQ expr
+  | expr LT  expr
+  | expr GT  expr
+  | expr
+;

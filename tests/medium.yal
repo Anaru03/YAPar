@@ -1,0 +1,18 @@
+(* Lexer complejidad media *)
+
+let letter = ['a'-'z' 'A'-'Z']
+let digit  = ['0'-'9']
+
+rule tokens =
+    "if"                        { return IF }
+  | "else"                      { return ELSE }
+  | "while"                     { return WHILE }
+  | letter (letter | digit)*   { return ID }
+  | digit+                     { return NUM }
+  | '='                        { return ASSIGN }
+  | ';'                        { return SEMI }
+  | '('                        { return LPAREN }
+  | ')'                        { return RPAREN }
+  | '{'                        { return LBRACE }
+  | '}'                        { return RBRACE }
+  | [' ' '\t' '\n']+           { return WS }

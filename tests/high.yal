@@ -1,0 +1,19 @@
+(* Lexer alta complejidad *)
+
+let letter = ['a'-'z' 'A'-'Z']
+let digit  = ['0'-'9']
+
+rule tokens =
+    letter (letter | digit)*   { return ID }
+  | digit+                     { return NUM }
+  | '+'                        { return PLUS }
+  | '-'                        { return MINUS }
+  | '*'                        { return TIMES }
+  | '/'                        { return DIV }
+  | '('                        { return LPAREN }
+  | ')'                        { return RPAREN }
+  | "=="                       { return EQ }
+  | "!="                       { return NEQ }
+  | '<'                        { return LT }
+  | '>'                        { return GT }
+  | [' ' '\t' '\n']+           { return WS }

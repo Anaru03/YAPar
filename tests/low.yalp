@@ -1,0 +1,22 @@
+/* Baja complejidad: expresiones aritméticas */
+
+%token PLUS TIMES LPAREN RPAREN ID
+%token WS
+IGNORE WS
+
+%%
+
+expr:
+    expr PLUS term
+  | term
+;
+
+term:
+    term TIMES factor
+  | factor
+;
+
+factor:
+    LPAREN expr RPAREN
+  | ID
+;

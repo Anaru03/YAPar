@@ -1,0 +1,25 @@
+/* Complejidad media: sentencias if/while */
+
+%token IF ELSE WHILE ASSIGN SEMI LPAREN RPAREN LBRACE RBRACE ID NUM
+%token WS
+IGNORE WS
+
+%%
+
+stmt:
+    IF LPAREN expr RPAREN stmt
+  | IF LPAREN expr RPAREN stmt ELSE stmt
+  | WHILE LPAREN expr RPAREN stmt
+  | ID ASSIGN expr SEMI
+  | LBRACE stmtlist RBRACE
+;
+
+stmtlist:
+    stmtlist stmt
+  | stmt
+;
+
+expr:
+    ID
+  | NUM
+;
