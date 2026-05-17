@@ -2,6 +2,7 @@ package parser;
 
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Objects;
 
 public class LR0Item {
     public String left;
@@ -25,5 +26,25 @@ public class LR0Item {
 
     public LR0Item advance() {
         return new LR0Item(left, right, dot + 1);
+    }
+
+    @Override
+    public String toString() {
+        List<String> r = new ArrayList<>(right);
+        r.add(dot, "•");
+        return left + " -> " + String.join(" ", r);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof LR0Item)) return false;
+        LR0Item item = (LR0Item) o;
+        return dot == item.dot && left.equals(item.left) && right.equals(item.right);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(left, right, dot);
     }
 }
