@@ -3,311 +3,775 @@ package lexer;
 import java.util.*;
 
 /**
- * RegexToNFA — Convierte una expresión regular (formato YALex/OCaml) a un NFA
- * usando la construcción de Thompson. SIN java.util.regex.
+ * RegexToNFA
  *
- * Operadores soportados:
- *   [a-z]  ['a'-'z']    clases de caracteres
- *   'x'                 literal de carácter
- *   "abc"               literal de cadena
- *   .                   cualquier carácter (excepto \n)
- *   e*  e+  e?          cuantificadores
- *   e1 e2               concatenación
- *   e1 | e2             alternancia
- *   (e)                 agrupación
- *   \n \t \r \\         escapes
+ * Conversión regex → NFA usando Thompson
+ * SIN java.util.regex
  */
 public class RegexToNFA {
 
     private final String src;
+
     private int pos;
 
     public RegexToNFA(String src) {
+
         this.src = src;
+
         this.pos = 0;
     }
 
-    /** Punto de entrada: convierte la expresión completa a un fragmento NFA. */
+    /**
+     * Punto de entrada
+     */
     public static NFAFragment build(String regex) {
-        return new RegexToNFA(regex.trim()).parseAlt();
+
+        RegexToNFA parser =
+                new RegexToNFA(regex.trim());
+
+        return parser.parseAlt();
     }
 
-    // ── Gramática recursiva descendente ──────────────────────────────────
-    // alt   → concat ('|' concat)*
-    // concat→ quant quant*
-    // quant → atom ('*' | '+' | '?')*
-    // atom  → '(' alt ')' | '[' class ']' | '\'' char '\'' | '"' str '"' | '.' | char
+    // ─────────────────────────────────────────────────────────────────────
+    // alt → concat ('|' concat)*
+    // ─────────────────────────────────────────────────────────────────────
 
     private NFAFragment parseAlt() {
-        NFAFragment left = parseConcat();
-        while (pos < src.length() && src.charAt(pos) == '|') {
+
+        NFAFragment left =
+                parseConcat();
+
+        while (
+                pos < src.length()
+                        && src.charAt(pos) == '|'
+        ) {
+
             pos++;
-            NFAFragment right = parseConcat();
-            left = union(left, right);
+
+            NFAFragment right =
+                    parseConcat();
+
+            left =
+                    union(left, right);
         }
+
         return left;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // concat → quant quant*
+    // ─────────────────────────────────────────────────────────────────────
+
     private NFAFragment parseConcat() {
+
         skipSpaces();
-        NFAFragment result = parseQuant();
+
+        NFAFragment result =
+                parseQuant();
+
         skipSpaces();
-        while (pos < src.length() && !isAltOrClose()) {
-            result = concat(result, parseQuant());
+
+        while (
+                pos < src.length()
+                        && !isAltOrClose()
+        ) {
+
+            result =
+                    concat(
+                            result,
+                            parseQuant()
+                    );
+
             skipSpaces();
         }
+
         return result;
     }
 
-    /** Salta espacios que no son parte de un literal ni clase de caracteres */
-    private void skipSpaces() {
-        while (pos < src.length() && src.charAt(pos) == ' ') pos++;
+    private boolean isAltOrClose() {
+
+        char c =
+                src.charAt(pos);
+
+        return c == '|'
+                || c == ')';
     }
 
-    private boolean isAltOrClose() {
-        char c = src.charAt(pos);
-        return c == '|' || c == ')';
+    private void skipSpaces() {
+
+        while (
+                pos < src.length()
+                        && src.charAt(pos) == ' '
+        ) {
+            pos++;
+        }
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // quant → atom (* + ?)*
+    // ─────────────────────────────────────────────────────────────────────
 
     private NFAFragment parseQuant() {
-        NFAFragment f = parseAtom();
+
+        NFAFragment f =
+                parseAtom();
+
         while (pos < src.length()) {
-            char c = src.charAt(pos);
-            if (c == '*') { pos++; f = star(f); }
-            else if (c == '+') { pos++; f = plus(f); }
-            else if (c == '?') { pos++; f = question(f); }
-            else break;
+
+            char c =
+                    src.charAt(pos);
+
+            if (c == '*') {
+
+                pos++;
+
+                f = star(f);
+            }
+
+            else if (c == '+') {
+
+                pos++;
+
+                f = plus(f);
+            }
+
+            else if (c == '?') {
+
+                pos++;
+
+                f = question(f);
+            }
+
+            else {
+                break;
+            }
         }
+
         return f;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // atom
+    // ─────────────────────────────────────────────────────────────────────
+
     private NFAFragment parseAtom() {
-        if (pos >= src.length()) return epsilon();
+
+        if (pos >= src.length()) {
+            return epsilon();
+        }
+
         char c = src.charAt(pos);
 
+        // ─────────────────────────────────────────
+        // GRUPO (...)
+        // ─────────────────────────────────────────
+
         if (c == '(') {
+
             pos++;
-            NFAFragment f = parseAlt();
-            if (pos < src.length() && src.charAt(pos) == ')') pos++;
-            return f;
+
+            NFAFragment inside =
+                    parseAlt();
+
+            if (
+                    pos < src.length()
+                            && src.charAt(pos) == ')'
+            ) {
+                pos++;
+            }
+
+            return inside;
         }
+
+        // ─────────────────────────────────────────
+        // CHAR CLASS [...]
+        // ─────────────────────────────────────────
 
         if (c == '[') {
             return parseCharClass();
         }
 
+        // ─────────────────────────────────────────
+        // CHAR LITERAL
+        // ─────────────────────────────────────────
+
         if (c == '\'') {
-            return literal(parseCharLiteral());
+
+            char literal =
+                    parseCharLiteral();
+
+            return literal(literal);
         }
+
+        // ─────────────────────────────────────────
+        // STRING LITERAL
+        // ─────────────────────────────────────────
 
         if (c == '"') {
             return parseStringLiteral();
         }
 
+        // ─────────────────────────────────────────
+        // ANY CHAR
+        // ─────────────────────────────────────────
+
         if (c == '.') {
+
             pos++;
+
             return anyChar();
         }
 
+        // ─────────────────────────────────────────
+        // ESCAPED CHAR
+        // ─────────────────────────────────────────
+
         if (c == '\\') {
+
             pos++;
-            char esc = pos < src.length() ? src.charAt(pos++) : '\\';
-            return literal(unescape(esc));
+
+            if (pos >= src.length()) {
+                return literal('\\');
+            }
+
+            char next =
+                    src.charAt(pos++);
+
+            switch (next) {
+
+                case 'n':
+                    return literal('\n');
+
+                case 't':
+                    return literal('\t');
+
+                case 'r':
+                    return literal('\r');
+
+                case '\\':
+                    return literal('\\');
+
+                case '\'':
+                    return literal('\'');
+
+                case '"':
+                    return literal('"');
+
+                case '{':
+                    return literal('{');
+
+                case '}':
+                    return literal('}');
+
+                case '(':
+                    return literal('(');
+
+                case ')':
+                    return literal(')');
+
+                case '+':
+                    return literal('+');
+
+                case '*':
+                    return literal('*');
+
+                case '?':
+                    return literal('?');
+
+                case '|':
+                    return literal('|');
+
+                case '/':
+                    return literal('/');
+
+                case '-':
+                    return literal('-');
+
+                default:
+                    return literal(next);
+            }
         }
 
-        // Carácter normal (pero no operadores)
-        if ("*+?|)".indexOf(c) < 0) {
+        // ─────────────────────────────────────────
+        // LITERAL NORMAL
+        // ─────────────────────────────────────────
+
+        if ("|)*+?".indexOf(c) < 0) {
+
             pos++;
+
             return literal(c);
         }
 
-        // Si llegamos aquí es un operador suelto, epsilon
         return epsilon();
     }
 
-    // ── Clase de caracteres [...]  ─────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // CHAR CLASS [...]
+    // ─────────────────────────────────────────────────────────────────────
+
     private NFAFragment parseCharClass() {
-        pos++; // saltar '['
+
+        pos++;
+
         boolean negated = false;
-        if (pos < src.length() && src.charAt(pos) == '^') { negated = true; pos++; }
 
-        Set<Character> chars = new LinkedHashSet<>();
+        if (
+                pos < src.length()
+                        && src.charAt(pos) == '^'
+        ) {
 
-        while (pos < src.length() && src.charAt(pos) != ']') {
-            // Saltar espacios separadores
-            if (src.charAt(pos) == ' ') { pos++; continue; }
+            negated = true;
 
-            if (src.charAt(pos) == '\'') {
-                char c1 = parseCharLiteral();
-                // ¿Rango 'a'-'z'?
-                int save = pos;
-                // Saltar espacios
-                while (pos < src.length() && src.charAt(pos) == ' ') pos++;
-                if (pos < src.length() && src.charAt(pos) == '-') {
-                    pos++;
-                    while (pos < src.length() && src.charAt(pos) == ' ') pos++;
-                    if (pos < src.length() && src.charAt(pos) == '\'') {
-                        char c2 = parseCharLiteral();
-                        for (char r = c1; r <= c2; r++) chars.add(r);
-                        continue;
-                    } else {
-                        pos = save; // no era rango
-                    }
-                } else {
-                    pos = save;
-                }
-                chars.add(c1);
+            pos++;
+        }
+
+        Set<Character> chars =
+                new LinkedHashSet<>();
+
+        while (
+                pos < src.length()
+                        && src.charAt(pos) != ']'
+        ) {
+
+            if (src.charAt(pos) == ' ') {
+
+                pos++;
+
                 continue;
             }
 
-            // carácter Java normal dentro de []
-            char ch = src.charAt(pos++);
-            if (ch == '\\' && pos < src.length()) ch = unescape(src.charAt(pos++));
-            // rango ch-ch2
-            if (pos < src.length() && src.charAt(pos) == '-' && pos + 1 < src.length() && src.charAt(pos+1) != ']') {
+            // 'x'
+            if (src.charAt(pos) == '\'') {
+
+                char c1 =
+                        parseCharLiteral();
+
+                int save =
+                        pos;
+
+                skipSpaces();
+
+                // rango
+                if (
+                        pos < src.length()
+                                && src.charAt(pos) == '-'
+                ) {
+
+                    pos++;
+
+                    skipSpaces();
+
+                    if (
+                            pos < src.length()
+                                    && src.charAt(pos) == '\''
+                    ) {
+
+                        char c2 =
+                                parseCharLiteral();
+
+                        for (
+                                char r = c1;
+                                r <= c2;
+                                r++
+                        ) {
+                            chars.add(r);
+                        }
+
+                        continue;
+                    }
+
+                    else {
+                        pos = save;
+                    }
+                }
+
+                chars.add(c1);
+
+                continue;
+            }
+
+            char ch =
+                    src.charAt(pos++);
+
+            if (
+                    ch == '\\'
+                            && pos < src.length()
+            ) {
+
+                ch =
+                        unescape(src.charAt(pos++));
+            }
+
+            // rango normal
+            if (
+                    pos < src.length()
+                            && src.charAt(pos) == '-'
+                            && pos + 1 < src.length()
+                            && src.charAt(pos + 1) != ']'
+            ) {
+
                 pos++;
-                char c2 = src.charAt(pos++);
-                if (c2 == '\\' && pos < src.length()) c2 = unescape(src.charAt(pos++));
-                for (char r = ch; r <= c2; r++) chars.add(r);
-            } else {
+
+                char c2 =
+                        src.charAt(pos++);
+
+                if (
+                        c2 == '\\'
+                                && pos < src.length()
+                ) {
+
+                    c2 =
+                            unescape(src.charAt(pos++));
+                }
+
+                for (
+                        char r = ch;
+                        r <= c2;
+                        r++
+                ) {
+
+                    chars.add(r);
+                }
+            }
+
+            else {
+
                 chars.add(ch);
             }
         }
-        if (pos < src.length()) pos++; // saltar ']'
+
+        if (
+                pos < src.length()
+                        && src.charAt(pos) == ']'
+        ) {
+            pos++;
+        }
 
         if (negated) {
             return negatedCharSet(chars);
         }
+
         return charSet(chars);
     }
 
-    // ── Literal de carácter YALex: 'x' o '\n' ────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // CHAR LITERAL
+    // ─────────────────────────────────────────────────────────────────────
+
     private char parseCharLiteral() {
-        pos++; // saltar '
+
+        pos++;
+
         char c;
-        if (pos < src.length() && src.charAt(pos) == '\\') {
+
+        if (
+                pos < src.length()
+                        && src.charAt(pos) == '\\'
+        ) {
+
             pos++;
-            c = pos < src.length() ? unescape(src.charAt(pos++)) : '\\';
-        } else {
-            c = pos < src.length() ? src.charAt(pos++) : 0;
+
+            if (pos < src.length()) {
+
+                c =
+                        unescape(src.charAt(pos++));
+
+            } else {
+
+                c = '\\';
+            }
         }
-        if (pos < src.length() && src.charAt(pos) == '\'') pos++;
+
+        else {
+
+            if (pos < src.length()) {
+
+                c = src.charAt(pos++);
+
+            } else {
+
+                c = 0;
+            }
+        }
+
+        if (
+                pos < src.length()
+                        && src.charAt(pos) == '\''
+        ) {
+            pos++;
+        }
+
         return c;
     }
 
-    // ── Literal de cadena: "abc" ──────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // STRING LITERAL
+    // ─────────────────────────────────────────────────────────────────────
+
     private NFAFragment parseStringLiteral() {
-        pos++; // saltar "
-        List<Character> chars = new ArrayList<>();
-        while (pos < src.length() && src.charAt(pos) != '"') {
-            char ch = src.charAt(pos++);
-            if (ch == '\\' && pos < src.length()) ch = unescape(src.charAt(pos++));
+
+        pos++;
+
+        List<Character> chars =
+                new ArrayList<>();
+
+        while (
+                pos < src.length()
+                        && src.charAt(pos) != '"'
+        ) {
+
+            char ch =
+                    src.charAt(pos++);
+
+            if (
+                    ch == '\\'
+                            && pos < src.length()
+            ) {
+
+                ch =
+                        unescape(src.charAt(pos++));
+            }
+
             chars.add(ch);
         }
-        if (pos < src.length()) pos++; // saltar "
-        if (chars.isEmpty()) return epsilon();
-        NFAFragment f = literal(chars.get(0));
-        for (int i = 1; i < chars.size(); i++) f = concat(f, literal(chars.get(i)));
+
+        if (
+                pos < src.length()
+                        && src.charAt(pos) == '"'
+        ) {
+            pos++;
+        }
+
+        if (chars.isEmpty()) {
+            return epsilon();
+        }
+
+        NFAFragment f =
+                literal(chars.get(0));
+
+        for (int i = 1; i < chars.size(); i++) {
+
+            f =
+                    concat(
+                            f,
+                            literal(chars.get(i))
+                    );
+        }
+
         return f;
     }
 
-    // ── Operaciones NFA de Thompson ───────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // THOMPSON
+    // ─────────────────────────────────────────────────────────────────────
 
     private NFAFragment literal(char c) {
-        NFANode s = new NFANode();
-        NFANode e = new NFANode();
+
+        NFANode s =
+                new NFANode();
+
+        NFANode e =
+                new NFANode();
+
         s.addTransition(c, e);
-        return new NFAFragment(s, e);
-    }
 
-    private NFAFragment charSet(Set<Character> chars) {
-        NFANode s = new NFANode();
-        NFANode e = new NFANode();
-        for (char c : chars) s.addTransition(c, e);
-        return new NFAFragment(s, e);
-    }
-
-    /** Cualquier char de 0..127 excepto los excluidos */
-    private NFAFragment negatedCharSet(Set<Character> excluded) {
-        NFANode s = new NFANode();
-        NFANode e = new NFANode();
-        for (int i = 0; i < 128; i++) {
-            char c = (char) i;
-            if (!excluded.contains(c)) s.addTransition(c, e);
-        }
-        return new NFAFragment(s, e);
-    }
-
-    /** Cualquier carácter imprimible (excepto \n) */
-    private NFAFragment anyChar() {
-        NFANode s = new NFANode();
-        NFANode e = new NFANode();
-        for (int i = 0; i < 128; i++) {
-            if ((char) i != '\n') s.addTransition((char) i, e);
-        }
         return new NFAFragment(s, e);
     }
 
     private NFAFragment epsilon() {
-        NFANode s = new NFANode();
-        NFANode e = new NFANode();
+
+        NFANode s =
+                new NFANode();
+
+        NFANode e =
+                new NFANode();
+
         s.addEpsilon(e);
+
         return new NFAFragment(s, e);
     }
 
-    private NFAFragment concat(NFAFragment a, NFAFragment b) {
+    private NFAFragment concat(
+            NFAFragment a,
+            NFAFragment b
+    ) {
+
         a.end.addEpsilon(b.start);
-        return new NFAFragment(a.start, b.end);
+
+        return new NFAFragment(
+                a.start,
+                b.end
+        );
     }
 
-    private NFAFragment union(NFAFragment a, NFAFragment b) {
-        NFANode s = new NFANode();
-        NFANode e = new NFANode();
+    private NFAFragment union(
+            NFAFragment a,
+            NFAFragment b
+    ) {
+
+        NFANode s =
+                new NFANode();
+
+        NFANode e =
+                new NFANode();
+
         s.addEpsilon(a.start);
         s.addEpsilon(b.start);
+
         a.end.addEpsilon(e);
         b.end.addEpsilon(e);
+
         return new NFAFragment(s, e);
     }
 
-    private NFAFragment star(NFAFragment f) {
-        NFANode s = new NFANode();
-        NFANode e = new NFANode();
+    private NFAFragment star(
+            NFAFragment f
+    ) {
+
+        NFANode s =
+                new NFANode();
+
+        NFANode e =
+                new NFANode();
+
         s.addEpsilon(f.start);
         s.addEpsilon(e);
+
         f.end.addEpsilon(f.start);
         f.end.addEpsilon(e);
+
         return new NFAFragment(s, e);
     }
 
-    private NFAFragment plus(NFAFragment f) {
-        NFANode s = new NFANode();
-        NFANode e = new NFANode();
+    private NFAFragment plus(
+            NFAFragment f
+    ) {
+
+        NFANode s =
+                new NFANode();
+
+        NFANode e =
+                new NFANode();
+
         s.addEpsilon(f.start);
+
         f.end.addEpsilon(f.start);
         f.end.addEpsilon(e);
+
         return new NFAFragment(s, e);
     }
 
-    private NFAFragment question(NFAFragment f) {
-        NFANode s = new NFANode();
-        NFANode e = new NFANode();
+    private NFAFragment question(
+            NFAFragment f
+    ) {
+
+        NFANode s =
+                new NFANode();
+
+        NFANode e =
+                new NFANode();
+
         s.addEpsilon(f.start);
         s.addEpsilon(e);
+
         f.end.addEpsilon(e);
+
         return new NFAFragment(s, e);
     }
+
+    private NFAFragment charSet(
+            Set<Character> chars
+    ) {
+
+        NFANode s =
+                new NFANode();
+
+        NFANode e =
+                new NFANode();
+
+        for (char c : chars) {
+            s.addTransition(c, e);
+        }
+
+        return new NFAFragment(s, e);
+    }
+
+    private NFAFragment negatedCharSet(
+            Set<Character> excluded
+    ) {
+
+        NFANode s =
+                new NFANode();
+
+        NFANode e =
+                new NFANode();
+
+        for (int i = 0; i < 128; i++) {
+
+            char c = (char) i;
+
+            if (!excluded.contains(c)) {
+
+                s.addTransition(c, e);
+            }
+        }
+
+        return new NFAFragment(s, e);
+    }
+
+    private NFAFragment anyChar() {
+
+        NFANode s =
+                new NFANode();
+
+        NFANode e =
+                new NFANode();
+
+        for (int i = 0; i < 128; i++) {
+
+            char c = (char) i;
+
+            if (c != '\n') {
+
+                s.addTransition(c, e);
+            }
+        }
+
+        return new NFAFragment(s, e);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // ESCAPES
+    // ─────────────────────────────────────────────────────────────────────
 
     private static char unescape(char c) {
-        return switch (c) {
-            case 'n'  -> '\n';
-            case 't'  -> '\t';
-            case 'r'  -> '\r';
-            case '0'  -> '\0';
-            case '\\' -> '\\';
-            case '\'' -> '\'';
-            case '"'  -> '"';
-            default   -> c;
-        };
+
+        switch (c) {
+
+            case 'n':
+                return '\n';
+
+            case 't':
+                return '\t';
+
+            case 'r':
+                return '\r';
+
+            case '0':
+                return '\0';
+
+            case '\\':
+                return '\\';
+
+            case '\'':
+                return '\'';
+
+            case '"':
+                return '"';
+
+            default:
+                return c;
+        }
     }
 }
