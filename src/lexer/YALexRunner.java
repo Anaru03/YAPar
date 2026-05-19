@@ -3,56 +3,64 @@ package lexer;
 import runtime.Token;
 import java.io.*;
 import java.util.*;
-import java.util.regex.*;
 
 /**
  * YALexRunner — Analizador léxico basado en reglas .yal.
  *
- * Compatible con el formato completo de Jalex/YALex:
+ * Implementado CON AUTÓMATAS FINITOS (NFA → DFA via construcción de Thompson
+ * y construcción de subconjuntos). SIN java.util.regex.
  *
+ * Formato .yal soportado (Jalex/YALex):
  *   (* comentario *)
- *   { header }
  *   let ident = regexp
  *   rule entrypoint =
  *       regexp   { return TOKEN_NAME }
  *     | regexp   { return TOKEN_NAME }
- *   { trailer }
- *
- * También soporta el formato simplificado:
- *   TOKEN_NAME   java_regex
  *
  * Implementa longest-match con prioridad por orden de definición.
  */
 public class YALexRunner {
 
-    // ── Regla: (tokenName, javaRegexPattern) ──────────────────────────────
-    private final List<String[]> rules           = new ArrayList<>();
-    private final Set<String>    ignoreTokens    = new LinkedHashSet<>();
-    private final List<Pattern>  compiledPatterns = new ArrayList<>();
-    private boolean patternsDirty = true;
+    /** Regla: nombre del token y su expresión regular (ya expandida con lets) */
+    private final List<String[]> rules = new ArrayList<>();
+    /** Tokens que se deben ignorar (ej: WS) */
+    private final Set<String> ignoreTokens = new LinkedHashSet<>();
+
+    /** DFA combinado (un NFA por regla, combinados en uno, luego → DFA) */
+    private List<DFABuilder.DFAState> dfa = null;
+    private DFABuilder.DFAState dfaStart = null;
+    private boolean dfaDirty = true;
 
     public YALexRunner() {}
 
     // ── API pública ───────────────────────────────────────────────────────
 
-    public void addRule(String tokenName, String regex) {
-        rules.add(new String[]{tokenName, regex});
-        patternsDirty = true;
+    public void addRule(String tokenName, String regexYalex) {
+        rules.add(new String[]{tokenName, regexYalex});
+        dfaDirty = true;
     }
 
     public void ignoreToken(String name) {
         ignoreTokens.add(name);
     }
 
+    public Set<String> getIgnoreTokens() {
+        return Collections.unmodifiableSet(ignoreTokens);
+    }
+
     public List<String[]> getRules() {
         return Collections.unmodifiableList(rules);
     }
 
-    // ── Parseo de contenido .yal ──────────────────────────────────────────
+    /** Devuelve los nombres de token declarados (en orden de prioridad) */
+    public List<String> getDeclaredTokenNames() {
+        List<String> names = new ArrayList<>();
+        for (String[] r : rules) names.add(r[0]);
+        return names;
+    }
 
-    /**
-     * Carga un archivo .yal y construye el runner.
-     */
+    // ── Carga de archivos .yal ────────────────────────────────────────────
+
     public static YALexRunner fromFile(String path) throws IOException {
         StringBuilder sb = new StringBuilder();
         try (BufferedReader br = new BufferedReader(new FileReader(path))) {
@@ -62,50 +70,40 @@ public class YALexRunner {
         return fromContent(sb.toString());
     }
 
-    /**
-     * Carga reglas desde un String con contenido .yal.
-     * Detecta automáticamente el formato (Jalex o simplificado).
-     */
     public static YALexRunner fromContent(String content) {
         YALexRunner runner = new YALexRunner();
         String cleaned = removeComments(content);
-        if (cleaned.contains("rule ")) {
-            parseJalexFormat(runner, cleaned);
-        } else {
-            parseSimpleFormat(runner, cleaned);
-        }
+        parseJalexFormat(runner, cleaned);
         return runner;
     }
 
-    // ── Formato Jalex completo ────────────────────────────────────────────
+    // ── Parser de formato .yal ────────────────────────────────────────────
 
     private static void parseJalexFormat(YALexRunner runner, String content) {
-        // Extraer lets
         Map<String, String> lets = extractLets(content);
 
-        // Buscar inicio del bloque rule
         int ruleIdx = content.indexOf("rule ");
-        if (ruleIdx < 0) return;
+        if (ruleIdx < 0) {
+            parseSimpleFormat(runner, content);
+            return;
+        }
 
-        // Saltar "rule entrypoint [args] ="
         int eq = content.indexOf('=', ruleIdx);
         if (eq < 0) return;
         String ruleSection = content.substring(eq + 1).trim();
 
         // Quitar trailer { ... } al final si existe
         int trailerBrace = findTrailerBrace(ruleSection);
-        if (trailerBrace >= 0) {
-            ruleSection = ruleSection.substring(0, trailerBrace).trim();
-        }
+        if (trailerBrace >= 0) ruleSection = ruleSection.substring(0, trailerBrace).trim();
 
-        // Dividir alternativas
         List<String> alts = splitAlternatives(ruleSection);
 
+        int priority = 0;
         for (String alt : alts) {
             alt = alt.trim();
             if (alt.isEmpty()) continue;
 
-            // Extraer acción { ... }
+            // Separar regexp de { acción }
             String action = null;
             String regexp = alt;
             int brace = findTopLevelBrace(alt);
@@ -116,47 +114,30 @@ public class YALexRunner {
                     regexp = alt.substring(0, brace).trim();
                 }
             }
-
             if (regexp.isEmpty()) continue;
 
             // Expandir lets
             regexp = expandLets(regexp, lets);
 
-            // Obtener nombre del token
             String tokenName = extractTokenName(action, regexp);
             if (tokenName == null) continue;
 
-            // Convertir regexp a Java
-            String javaRegex;
-            try {
-                javaRegex = yalexRegexToJava(regexp);
-                // Validar que el patrón compila
-                Pattern.compile(javaRegex);
-            } catch (Exception e) {
-                // Patrón inválido: usar literal si es simple
-                javaRegex = Pattern.quote(regexp);
-            }
+            runner.addRule(tokenName, regexp);
 
-            runner.addRule(tokenName, javaRegex);
-
-            // Si la acción indica ignorar
             if (action != null && isIgnoreAction(action)) {
                 runner.ignoreToken(tokenName);
             }
+            priority++;
         }
     }
-
-    // ── Formato simplificado ──────────────────────────────────────────────
 
     private static void parseSimpleFormat(YALexRunner runner, String content) {
         for (String line : content.split("\n")) {
             line = line.trim();
-            if (line.isEmpty()) continue;
-            if (line.startsWith("let ") || line.startsWith("rule ")) continue;
-            if (line.startsWith("{") || line.startsWith("}")) continue;
+            if (line.isEmpty() || line.startsWith("let ") || line.startsWith("rule ")
+                    || line.startsWith("{") || line.startsWith("}")) continue;
             line = line.replaceAll("^\\|\\s*", "").trim();
             if (line.isEmpty()) continue;
-
             String[] parts = line.split("\\s+", 2);
             if (parts.length == 2 && parts[0].matches("[A-Z_][A-Z0-9_]*")) {
                 runner.addRule(parts[0], parts[1].trim());
@@ -164,48 +145,103 @@ public class YALexRunner {
         }
     }
 
-    // ── Tokenización ──────────────────────────────────────────────────────
+    // ── Construcción del DFA combinado ────────────────────────────────────
 
     /**
-     * Tokeniza la cadena de entrada.
-     * Longest-match: elige el patrón que consume más caracteres;
-     * en empate gana el que aparece primero (prioridad por orden).
+     * Construye un único NFA combinado con todas las reglas, luego lo convierte a DFA.
+     * El nodo de inicio del NFA combinado tiene transiciones epsilon a cada sub-NFA.
+     * Cada sub-NFA marca su estado final con el nombre del token y su prioridad (índice).
+     */
+    private void buildDFA() {
+        NFANode.resetCounter();
+        NFANode combinedStart = new NFANode();
+
+        for (int i = 0; i < rules.size(); i++) {
+            String tokenName = rules.get(i)[0];
+            String regex     = rules.get(i)[1];
+
+            NFAFragment frag;
+            try {
+                frag = RegexToNFA.build(regex);
+            } catch (Exception e) {
+                // Si la regexp falla, intentar como literal
+                frag = buildLiteralNFA(regex);
+            }
+
+            // Marcar estado final con prioridad
+            frag.end.acceptToken = tokenName;
+            frag.end.priority    = i;
+
+            combinedStart.addEpsilon(frag.start);
+        }
+
+        dfa = DFABuilder.build(combinedStart);
+        dfaStart = dfa.isEmpty() ? null : dfa.get(0);
+        dfaDirty = false;
+    }
+
+    private NFAFragment buildLiteralNFA(String literal) {
+        if (literal.isEmpty()) {
+            NFANode s = new NFANode(); NFANode e = new NFANode(); s.addEpsilon(e);
+            return new NFAFragment(s, e);
+        }
+        NFANode start = new NFANode();
+        NFANode prev  = start;
+        for (int i = 0; i < literal.length(); i++) {
+            NFANode next = new NFANode();
+            prev.addTransition(literal.charAt(i), next);
+            prev = next;
+        }
+        return new NFAFragment(start, prev);
+    }
+
+    // ── Tokenización (longest-match sobre el DFA) ─────────────────────────
+
+    /**
+     * Tokeniza la cadena de entrada usando el DFA.
+     * Longest-match: avanza mientras haya transiciones; al quedarse atascado
+     * retrocede al último estado de aceptación visitado.
      */
     public List<Token> tokenize(String input) {
-        ensurePatterns();
+        if (dfaDirty) buildDFA();
+        if (dfaStart == null) return new ArrayList<>();
+
         List<Token> tokens = new ArrayList<>();
         int pos  = 0;
         int line = 1;
         int len  = input.length();
 
         while (pos < len) {
-            int bestLen  = -1;
-            int bestRule = -1;
+            DFABuilder.DFAState state    = dfaStart;
+            int lastAcceptPos            = -1;
+            String lastAcceptToken       = null;
+            int i                        = pos;
 
-            for (int i = 0; i < rules.size(); i++) {
-                Pattern p = compiledPatterns.get(i);
-                if (p == null) continue;
-                Matcher m = p.matcher(input);
-                m.region(pos, len);
-                m.useAnchoringBounds(true);
-                if (m.lookingAt()) {
-                    int mLen = m.group().length();
-                    if (mLen > bestLen) {
-                        bestLen  = mLen;
-                        bestRule = i;
-                    }
+            // Avanzar por el DFA, recordando el último estado de aceptación
+            while (i < len) {
+                char c = input.charAt(i);
+                DFABuilder.DFAState next = state.transitions.get(c);
+                if (next == null) break;
+                state = next;
+                i++;
+                if (state.acceptToken != null) {
+                    lastAcceptPos   = i;
+                    lastAcceptToken = state.acceptToken;
                 }
             }
 
-            if (bestRule >= 0 && bestLen > 0) {
-                String tokenName = rules.get(bestRule)[0];
-                String lexeme    = input.substring(pos, pos + bestLen);
-                if (!ignoreTokens.contains(tokenName)) {
-                    tokens.add(new Token(tokenName, lexeme, line));
+            if (lastAcceptPos > pos) {
+                // Tenemos un match
+                String lexeme = input.substring(pos, lastAcceptPos);
+                if (!ignoreTokens.contains(lastAcceptToken)) {
+                    tokens.add(new Token(lastAcceptToken, lexeme, line));
                 }
-                for (char c : lexeme.toCharArray()) if (c == '\n') line++;
-                pos += bestLen;
+                for (int k = pos; k < lastAcceptPos; k++) {
+                    if (input.charAt(k) == '\n') line++;
+                }
+                pos = lastAcceptPos;
             } else {
+                // Error léxico: consumir un carácter
                 char c = input.charAt(pos);
                 if (c == '\n') line++;
                 tokens.add(new Token("LEXER_ERROR", String.valueOf(c), line));
@@ -215,88 +251,178 @@ public class YALexRunner {
         return tokens;
     }
 
-    private void ensurePatterns() {
-        if (!patternsDirty) return;
-        compiledPatterns.clear();
-        for (String[] rule : rules) {
-            try {
-                compiledPatterns.add(Pattern.compile(rule[1]));
-            } catch (PatternSyntaxException e) {
-                compiledPatterns.add(null);
+    // ── Validación cruzada con YAParFileParser ────────────────────────────
+
+    /**
+     * Valida que todos los tokens declarados en el .yalp estén definidos en este lexer.
+     * Devuelve lista de tokens faltantes (vacía = OK).
+     */
+    public List<String> validateAgainst(Set<String> yalpTokens) {
+        Set<String> lexerTokens = new LinkedHashSet<>();
+        for (String[] r : rules) lexerTokens.add(r[0]);
+
+        List<String> missing = new ArrayList<>();
+        for (String t : yalpTokens) {
+            if (!t.equals("$") && !t.equals("ε") && !lexerTokens.contains(t)) {
+                missing.add(t);
             }
         }
-        patternsDirty = false;
+        return missing;
     }
 
     // ── Helpers de parseo .yal ────────────────────────────────────────────
 
     private static String removeComments(String src) {
-        // Eliminar comentarios (* ... *) incluso multilinea
-        return src.replaceAll("(?s)\\(\\*.*?\\*\\)", " ");
+        // Eliminar (* ... *) multilinea
+        StringBuilder sb = new StringBuilder();
+        int i = 0;
+        while (i < src.length()) {
+            if (i + 1 < src.length() && src.charAt(i) == '(' && src.charAt(i+1) == '*') {
+                i += 2;
+                while (i + 1 < src.length() && !(src.charAt(i) == '*' && src.charAt(i+1) == ')')) i++;
+                i += 2;
+            } else {
+                sb.append(src.charAt(i++));
+            }
+        }
+        return sb.toString();
     }
 
     private static Map<String, String> extractLets(String content) {
         Map<String, String> lets = new LinkedHashMap<>();
-        // let ident = regexp  (hasta siguiente let / rule / {)
-        Pattern p = Pattern.compile(
-            "let\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(.*?)(?=\\blet\\b|\\brule\\b|\\{|$)",
-            Pattern.DOTALL);
-        Matcher m = p.matcher(content);
-        while (m.find()) {
-            lets.put(m.group(1).trim(), m.group(2).trim());
+        int i = 0;
+        while (i < content.length()) {
+            // Buscar "let "
+            int idx = content.indexOf("let ", i);
+            if (idx < 0) break;
+            // Nombre
+            int nameStart = idx + 4;
+            while (nameStart < content.length() && content.charAt(nameStart) == ' ') nameStart++;
+            int nameEnd = nameStart;
+            while (nameEnd < content.length() && isIdentChar(content.charAt(nameEnd))) nameEnd++;
+            String name = content.substring(nameStart, nameEnd).trim();
+            // =
+            int eqIdx = content.indexOf('=', nameEnd);
+            if (eqIdx < 0) break;
+            // Valor: hasta el siguiente "let", "rule", "{" o fin
+            int valStart = eqIdx + 1;
+            int valEnd = content.length();
+            int[] stops = {
+                nextOccurrence(content, "\nlet ", valStart),
+                nextOccurrence(content, "\nrule ", valStart),
+                // no cortamos en { porque el valor puede tenerlos en clases []
+            };
+            for (int s : stops) if (s > valStart && s < valEnd) valEnd = s;
+            String val = content.substring(valStart, valEnd).trim();
+            if (!name.isEmpty()) lets.put(name, val);
+            i = valEnd;
         }
         return lets;
     }
 
+    private static int nextOccurrence(String s, String sub, int from) {
+        int idx = s.indexOf(sub, from);
+        return idx < 0 ? s.length() : idx;
+    }
+
+    private static boolean isIdentChar(char c) {
+        return Character.isLetterOrDigit(c) || c == '_';
+    }
+
+    private static String expandLets(String regexp, Map<String, String> lets) {
+        String result = regexp;
+        for (int pass = 0; pass <= lets.size() + 1; pass++) {
+            String prev = result;
+            for (Map.Entry<String, String> e : lets.entrySet()) {
+                String name = e.getKey();
+                String val  = "(" + e.getValue() + ")";
+                result = replaceWord(result, name, val);
+            }
+            if (result.equals(prev)) break;
+        }
+        return result;
+    }
+
+    /**
+     * Reemplaza ocurrencias de `word` en `src` que no estén dentro de literales
+     * de carácter 'x' ni de cadenas "abc", y que estén rodeadas de no-ident.
+     */
+    private static String replaceWord(String src, String word, String replacement) {
+        StringBuilder sb = new StringBuilder();
+        int i = 0;
+        while (i < src.length()) {
+            char c = src.charAt(i);
+            // Saltar literales 'x'
+            if (c == '\'') {
+                int end = i + 1;
+                if (end < src.length() && src.charAt(end) == '\\') end++;
+                end++;
+                if (end < src.length() && src.charAt(end) == '\'') end++;
+                sb.append(src, i, end);
+                i = end;
+                continue;
+            }
+            // Saltar cadenas "..."
+            if (c == '"') {
+                int end = i + 1;
+                while (end < src.length() && src.charAt(end) != '"') {
+                    if (src.charAt(end) == '\\') end++;
+                    end++;
+                }
+                if (end < src.length()) end++;
+                sb.append(src, i, end);
+                i = end;
+                continue;
+            }
+            // ¿Empieza la palabra aquí?
+            if (src.startsWith(word, i)) {
+                boolean prevOk = (i == 0) || !isIdentChar(src.charAt(i - 1));
+                int after = i + word.length();
+                boolean nextOk = (after >= src.length()) || !isIdentChar(src.charAt(after));
+                if (prevOk && nextOk) {
+                    sb.append(replacement);
+                    i += word.length();
+                    continue;
+                }
+            }
+            sb.append(c);
+            i++;
+        }
+        return sb.toString();
+    }
+
     private static int findTrailerBrace(String s) {
-        // El trailer es un { } al nivel top DESPUÉS de todas las alternativas
-        // Solo existe si hay una llave que no sea acción de alternativa
-        // Buscamos el último { al nivel top sin un | antes
+        // El trailer es el primer { al nivel top que no es acción de alternativa
+        // (simplificado: buscamos el último bloque { } top-level)
         int depth = 0;
         for (int i = s.length() - 1; i >= 0; i--) {
             char c = s.charAt(i);
             if (c == '}') { depth++; continue; }
-            if (c == '{') {
-                if (depth == 0) return i;
-                depth--;
-            }
+            if (c == '{') { if (depth == 0) return i; depth--; }
         }
         return -1;
     }
 
     private static List<String> splitAlternatives(String src) {
         List<String> alts = new ArrayList<>();
-        int depth = 0; // [] y ()
-        int braceDepth = 0;
+        int depth = 0, braceDepth = 0;
         StringBuilder cur = new StringBuilder();
-
         int i = 0;
         while (i < src.length()) {
             char c = src.charAt(i);
-
-            if (c == '\'' ) {
-                // Literal
+            if (c == '\'') {
                 cur.append(c); i++;
                 if (i < src.length() && src.charAt(i) == '\\') { cur.append(src.charAt(i)); i++; }
                 if (i < src.length()) { cur.append(src.charAt(i)); i++; }
                 if (i < src.length() && src.charAt(i) == '\'') { cur.append(src.charAt(i)); i++; }
                 continue;
             }
-            if (c == '[') { depth++; cur.append(c); i++; continue; }
-            if (c == ']') { depth--; cur.append(c); i++; continue; }
-            if (c == '(') { depth++; cur.append(c); i++; continue; }
-            if (c == ')') { depth--; cur.append(c); i++; continue; }
+            if (c == '[' || c == '(') { depth++; cur.append(c); i++; continue; }
+            if (c == ']' || c == ')') { depth--; cur.append(c); i++; continue; }
             if (c == '{') { braceDepth++; cur.append(c); i++; continue; }
-            if (c == '}') {
-                braceDepth--;
-                cur.append(c); i++;
-                continue;
-            }
+            if (c == '}') { braceDepth--; cur.append(c); i++; continue; }
             if (c == '|' && depth == 0 && braceDepth == 0) {
-                alts.add(cur.toString().trim());
-                cur.setLength(0);
-                i++;
-                continue;
+                alts.add(cur.toString().trim()); cur.setLength(0); i++; continue;
             }
             cur.append(c); i++;
         }
@@ -310,12 +436,7 @@ public class YALexRunner {
         int i = 0;
         while (i < s.length()) {
             char c = s.charAt(i);
-            if (c == '\'' ) {
-                i++;
-                if (i < s.length() && s.charAt(i) == '\\') i++;
-                i += 2;
-                continue;
-            }
+            if (c == '\'') { i++; if (i < s.length() && s.charAt(i) == '\\') i++; i += 2; continue; }
             if (c == '[' || c == '(') { depth++; i++; continue; }
             if (c == ']' || c == ')') { depth--; i++; continue; }
             if (c == '{' && depth == 0) return i;
@@ -334,270 +455,34 @@ public class YALexRunner {
     }
 
     private static boolean isIgnoreAction(String action) {
-        return action.equals("skip")
-            || action.equals("return lexbuf")
-            || action.contains("lexbuf")
-            || action.isBlank();
+        return action.isBlank() || action.equals("skip") || action.contains("lexbuf");
     }
 
     private static String extractTokenName(String action, String regexp) {
-        if (action == null) return deriveNameFromRegexp(regexp);
+        if (action == null) return deriveFromRegexp(regexp);
         action = action.trim();
+        if (action.equals("skip")) return "__SKIP__";
 
-        // skip sin return
-        if (action.equals("skip")) return "_WS_SKIP_";
-
-        // return TOKEN o return TOKEN(lxm)
-        Matcher m = Pattern.compile("return\\s+([A-Za-z_][A-Za-z0-9_]*)").matcher(action);
-        if (m.find()) {
-            String name = m.group(1);
-            if (name.equals("int"))    return "INT";
-            if (name.equals("float"))  return "FLOAT";
-            if (name.equals("string")) return "STRING";
-            if (name.equals("lexbuf")) return "__SKIP__";
-            return name;
+        // Buscar: return TOKEN
+        int retIdx = action.indexOf("return");
+        if (retIdx >= 0) {
+            String after = action.substring(retIdx + 6).trim();
+            // Extraer identificador
+            int end = 0;
+            while (end < after.length() && (Character.isLetterOrDigit(after.charAt(end)) || after.charAt(end) == '_')) end++;
+            if (end > 0) {
+                String name = after.substring(0, end);
+                if (name.equals("lexbuf")) return "__SKIP__";
+                return name;
+            }
         }
-
         if (action.contains("raise")) return null;
-        return deriveNameFromRegexp(regexp);
+        if (action.isBlank()) return "__SKIP__";
+        return deriveFromRegexp(regexp);
     }
 
-    private static String deriveNameFromRegexp(String regexp) {
+    private static String deriveFromRegexp(String regexp) {
         if (regexp == null || regexp.isBlank()) return null;
         return "TOKEN_" + regexp.replaceAll("[^A-Za-z0-9]", "").toUpperCase();
-    }
-
-    private static String expandLets(String regexp, Map<String, String> lets) {
-        String result = regexp;
-        for (int pass = 0; pass <= lets.size(); pass++) {
-            String prev = result;
-            for (Map.Entry<String, String> e : lets.entrySet()) {
-                String name = e.getKey();
-                String val  = "(?:" + e.getValue() + ")";
-                result = result.replaceAll(
-                    "(?<![a-zA-Z0-9_])" + Pattern.quote(name) + "(?![a-zA-Z0-9_])",
-                    Matcher.quoteReplacement(val));
-            }
-            if (result.equals(prev)) break;
-        }
-        return result;
-    }
-
-    // ── Conversión YALex regexp → Java regex ──────────────────────────────
-
-    /**
-     * Convierte una regexp estilo YALex/OCaml a Java regex.
-     *
-     * Soporta:
-     *   ['a'-'z']          → [a-z]
-     *   ['a'-'z' 'A'-'Z']  → [a-zA-Z]
-     *   digit+             → (si ya expandido) o se pasa como está
-     *   '\n' '\t'          → \n \t
-     *   eof                → \\z
-     */
-    static String yalexRegexToJava(String yalex) {
-        if (yalex == null) return "";
-        yalex = yalex.trim();
-        if (yalex.equals("eof")) return "\\z";
-
-        StringBuilder sb = new StringBuilder();
-        int i = 0;
-        while (i < yalex.length()) {
-            char c = yalex.charAt(i);
-
-            // Clase de caracteres YALex: [...]
-            if (c == '[') {
-                int end = findMatchingBracket(yalex, i);
-                String inner = yalex.substring(i + 1, end);
-                sb.append(convertCharClass(inner));
-                i = end + 1;
-                continue;
-            }
-
-            // Literal de carácter: 'x', '\n'
-            if (c == '\'') {
-                int[] res = readYalCharLiteral(yalex, i);
-                char ch = (char) res[0];
-                sb.append(escapeJavaRegex(ch));
-                i = res[1];
-                continue;
-            }
-
-            // String literal: "abc"
-            if (c == '"') {
-                int j = i + 1;
-                StringBuilder lit = new StringBuilder();
-                while (j < yalex.length() && yalex.charAt(j) != '"') {
-                    if (yalex.charAt(j) == '\\') {
-                        j++;
-                        lit.append(unescapeChar(yalex.charAt(j)));
-                    } else {
-                        lit.append(yalex.charAt(j));
-                    }
-                    j++;
-                }
-                sb.append(Pattern.quote(lit.toString()));
-                i = j + 1;
-                continue;
-            }
-
-            // Operadores de regex: pasar tal cual
-            if ("()|*+?".indexOf(c) >= 0) {
-                sb.append(c); i++; continue;
-            }
-
-            // Punto (cualquier carácter)
-            if (c == '.') {
-                sb.append('.'); i++; continue;
-            }
-
-            // Identificador (let ya expandido o keyword)
-            if (Character.isLetter(c) || c == '_') {
-                int j = i;
-                while (j < yalex.length() && (Character.isLetterOrDigit(yalex.charAt(j)) || yalex.charAt(j) == '_')) j++;
-                String word = yalex.substring(i, j);
-                switch (word) {
-                    case "eof"      -> sb.append("\\z");
-                    default         -> sb.append(Pattern.quote(word));
-                }
-                i = j;
-                continue;
-            }
-
-            // Backslash: escape Java estándar
-            if (c == '\\' && i + 1 < yalex.length()) {
-                sb.append('\\').append(yalex.charAt(i + 1));
-                i += 2;
-                continue;
-            }
-
-            // Carácter especial de regex: escapar
-            if ("\\.^${}[]|()".indexOf(c) >= 0) {
-                sb.append('\\').append(c);
-            } else {
-                sb.append(c);
-            }
-            i++;
-        }
-        return sb.toString();
-    }
-
-    private static String convertCharClass(String content) {
-        StringBuilder sb = new StringBuilder("[");
-        content = content.trim();
-        boolean negated = false;
-        int i = 0;
-        if (i < content.length() && content.charAt(i) == '^') {
-            negated = true;
-            sb.append('^');
-            i++;
-        }
-
-        while (i < content.length()) {
-            // Saltar espacios separadores (no dentro de literales)
-            while (i < content.length() && content.charAt(i) == ' ') i++;
-            if (i >= content.length()) break;
-
-            if (content.charAt(i) == '\'') {
-                int[] r1 = readYalCharLiteral(content, i);
-                char c1 = (char) r1[0];
-                int next = r1[1];
-
-                while (next < content.length() && content.charAt(next) == ' ') next++;
-
-                if (next < content.length() && content.charAt(next) == '-') {
-                    next++;
-                    while (next < content.length() && content.charAt(next) == ' ') next++;
-                    if (next < content.length() && content.charAt(next) == '\'') {
-                        int[] r2 = readYalCharLiteral(content, next);
-                        char c2 = (char) r2[0];
-                        sb.append(escapeForClass(c1)).append('-').append(escapeForClass(c2));
-                        i = r2[1];
-                        continue;
-                    }
-                }
-                sb.append(escapeForClass(c1));
-                i = r1[1];
-                continue;
-            }
-
-            // Otro carácter dentro de clase
-            char c = content.charAt(i);
-            if ("\\^]-".indexOf(c) >= 0) sb.append('\\');
-            sb.append(c);
-            i++;
-        }
-        sb.append(']');
-        return sb.toString();
-    }
-
-    private static String escapeForClass(char c) {
-        return switch (c) {
-            case '\\' -> "\\\\";
-            case ']'  -> "\\]";
-            case '^'  -> "\\^";
-            case '-'  -> "\\-";
-            case '\n' -> "\\n";
-            case '\t' -> "\\t";
-            case '\r' -> "\\r";
-            default   -> String.valueOf(c);
-        };
-    }
-
-    private static String escapeJavaRegex(char c) {
-        return switch (c) {
-            case '\n' -> "\\n";
-            case '\t' -> "\\t";
-            case '\r' -> "\\r";
-            default   -> {
-                if ("\\.^${}[]|()*+?".indexOf(c) >= 0)
-                    yield "\\" + c;
-                yield String.valueOf(c);
-            }
-        };
-    }
-
-    private static int[] readYalCharLiteral(String s, int pos) {
-        pos++; // saltar '
-        char c;
-        if (pos < s.length() && s.charAt(pos) == '\\') {
-            pos++;
-            c = pos < s.length() ? unescapeChar(s.charAt(pos)) : '\\';
-            pos++;
-        } else {
-            c = pos < s.length() ? s.charAt(pos) : 0;
-            pos++;
-        }
-        if (pos < s.length() && s.charAt(pos) == '\'') pos++;
-        return new int[]{c, pos};
-    }
-
-    private static char unescapeChar(char c) {
-        return switch (c) {
-            case 'n'  -> '\n';
-            case 't'  -> '\t';
-            case 'r'  -> '\r';
-            case '0'  -> '\0';
-            case '\\' -> '\\';
-            case '\'' -> '\'';
-            case '"'  -> '"';
-            default   -> c;
-        };
-    }
-
-    private static int findMatchingBracket(String s, int open) {
-        int i = open + 1;
-        while (i < s.length()) {
-            char c = s.charAt(i);
-            if (c == '\'') {
-                i++;
-                if (i < s.length() && s.charAt(i) == '\\') i++;
-                i += 2;
-                continue;
-            }
-            if (c == ']') return i;
-            i++;
-        }
-        return s.length() - 1;
     }
 }
