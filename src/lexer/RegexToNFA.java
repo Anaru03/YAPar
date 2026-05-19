@@ -461,40 +461,35 @@ public class RegexToNFA {
 
     private char parseCharLiteral() {
 
+        // consumir '
         pos++;
+
+        if (pos >= src.length()) {
+            return 0;
+        }
 
         char c;
 
-        if (
-                pos < src.length()
-                        && src.charAt(pos) == '\\'
-        ) {
+        // escape
+        if (src.charAt(pos) == '\\') {
 
             pos++;
 
-            if (pos < src.length()) {
-
-                c =
-                        unescape(src.charAt(pos++));
-
-            } else {
-
-                c = '\\';
+            if (pos >= src.length()) {
+                return '\\';
             }
+
+            c = unescape(src.charAt(pos));
+            pos++;
         }
 
         else {
 
-            if (pos < src.length()) {
-
-                c = src.charAt(pos++);
-
-            } else {
-
-                c = 0;
-            }
+            c = src.charAt(pos);
+            pos++;
         }
 
+        // consumir cierre '
         if (
                 pos < src.length()
                         && src.charAt(pos) == '\''

@@ -1,3 +1,6 @@
+// REEMPLAZA COMPLETAMENTE:
+// parser/YAParFileParser.java
+
 package parser;
 
 import java.io.*;
@@ -6,21 +9,23 @@ import lexer.YALexRunner;
 
 public class YAParFileParser {
 
-    /**
-     * Resultado del parse + validación
-     */
     public static class ParseResult {
 
         public final Grammar grammar;
 
         public final List<String> tokenValidationErrors;
 
+        public final List<String> warnings;
+
         public ParseResult(
                 Grammar grammar,
-                List<String> errors
+                List<String> errors,
+                List<String> warnings
         ) {
+
             this.grammar = grammar;
             this.tokenValidationErrors = errors;
+            this.warnings = warnings;
         }
 
         public boolean hasErrors() {
@@ -28,9 +33,7 @@ public class YAParFileParser {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // API
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────
 
     public static Grammar parse(String filePath)
             throws IOException {
@@ -43,38 +46,78 @@ public class YAParFileParser {
             YALexRunner lexer
     ) {
 
-        Grammar g = parseContent(yalpContent);
+        Grammar g =
+                parseContent(yalpContent);
 
         List<String> errors =
                 validateTokens(g, lexer);
 
-        return new ParseResult(g, errors);
+        GrammarAnalyzer.AnalysisResult analysis =
+                GrammarAnalyzer.analyze(g);
+
+        return new ParseResult(
+                g,
+                errors,
+                analysis.warnings
+        );
     }
+
+    // ─────────────────────────────────────────────────────────
+    // VALIDACIÓN CRUZADA REAL
+    // ─────────────────────────────────────────────────────────
 
     public static List<String> validateTokens(
             Grammar grammar,
             YALexRunner lexer
     ) {
 
-        List<String> missing =
-                lexer.validateAgainst(grammar.terminals);
+        Set<String> lexerTokens =
+                new LinkedHashSet<>();
 
-        List<String> errors = new ArrayList<>();
+        for (String[] r : lexer.getRules()) {
+            lexerTokens.add(r[0]);
+        }
 
-        for (String t : missing) {
+        List<String> errors =
+                new ArrayList<>();
 
-            errors.add(
-                    "ERROR: Token '" + t +
-                            "' declarado en .yalp no está definido en .yal"
-            );
+        // Tokens declarados en YALP pero no definidos en YALEX
+        for (String t : grammar.terminals) {
+
+            if (
+                    t.equals("$")
+                            || t.equals("ε")
+            ) {
+                continue;
+            }
+
+            if (!lexerTokens.contains(t)) {
+
+                errors.add(
+                        "[YALP -> YALEX] Token '" + t +
+                                "' declarado en .yalp NO existe en .yal"
+                );
+            }
+        }
+
+        // Tokens definidos en YALEX pero nunca usados en YALP
+        for (String lt : lexerTokens) {
+
+            if (!grammar.terminals.contains(lt)) {
+
+                errors.add(
+                        "[YALEX -> YALP] Token '" + lt +
+                                "' definido en .yal PERO no usado en .yalp"
+                );
+            }
         }
 
         return errors;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Parser .yalp
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────
+    // PARSER .YALP
+    // ─────────────────────────────────────────────────────────
 
     public static Grammar parseContent(String content) {
 
@@ -85,12 +128,13 @@ public class YAParFileParser {
         String[] parts = content.split("%%", 2);
 
         if (parts.length < 2) {
+
             throw new RuntimeException(
-                    "Falta separador %% en el archivo .yalp"
+                    "Falta separador %% en .yalp"
             );
         }
 
-        // ── TOKENS ───────────────────────────────────────────────────────
+        // TOKENS
 
         for (String line : parts[0].split("\\n")) {
 
@@ -99,7 +143,9 @@ public class YAParFileParser {
             if (line.startsWith("%token")) {
 
                 String[] toks =
-                        line.substring(6).trim().split("\\s+");
+                        line.substring(6)
+                                .trim()
+                                .split("\\s+");
 
                 for (String tok : toks) {
 
@@ -112,7 +158,9 @@ public class YAParFileParser {
             else if (line.startsWith("IGNORE")) {
 
                 String[] toks =
-                        line.substring(6).trim().split("\\s+");
+                        line.substring(6)
+                                .trim()
+                                .split("\\s+");
 
                 for (String tok : toks) {
 
@@ -123,7 +171,7 @@ public class YAParFileParser {
             }
         }
 
-        // ── PRODUCCIONES ────────────────────────────────────────────────
+        // PRODUCCIONES
 
         String productions =
                 parts[1].trim();
@@ -137,43 +185,55 @@ public class YAParFileParser {
 
             block = block.trim();
 
-            if (block.isEmpty()) continue;
+            if (block.isEmpty()) {
+                continue;
+            }
 
-            int colon = block.indexOf(':');
+            int colon =
+                    block.indexOf(':');
 
-            if (colon < 0) continue;
+            if (colon < 0) {
+                continue;
+            }
 
             String head =
-                    block.substring(0, colon).trim();
+                    block.substring(0, colon)
+                            .trim();
 
-            if (head.isEmpty()) continue;
+            if (head.isEmpty()) {
+                continue;
+            }
 
             g.nonTerminals.add(head);
 
             if (first) {
+
                 g.startSymbol = head;
+
                 first = false;
             }
 
-            String rhsSection =
+            String rhs =
                     block.substring(colon + 1);
 
-            String[] alternatives =
-                    rhsSection.split("\\|");
+            String[] alts =
+                    rhs.split("\\|");
 
-            for (String alt : alternatives) {
+            for (String alt : alts) {
 
                 alt = alt.trim();
 
-                if (alt.isEmpty()) continue;
+                if (alt.isEmpty()) {
+                    continue;
+                }
 
                 List<String> symbols =
                         new ArrayList<>();
 
-                for (String sym : alt.split("\\s+")) {
+                for (String s : alt.split("\\s+")) {
 
-                    if (!sym.isEmpty()) {
-                        symbols.add(sym);
+                    if (!s.isEmpty()) {
+                        symbols.add(s);
                     }
                 }
 
@@ -186,13 +246,14 @@ public class YAParFileParser {
         return g;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────
 
-    private static String stripBlockComments(String src) {
+    private static String stripBlockComments(
+            String src
+    ) {
 
-        StringBuilder sb = new StringBuilder();
+        StringBuilder sb =
+                new StringBuilder();
 
         int i = 0;
 
@@ -208,8 +269,10 @@ public class YAParFileParser {
 
                 while (
                         i + 1 < src.length()
-                                && !(src.charAt(i) == '*'
-                                && src.charAt(i + 1) == '/')
+                                && !(
+                                src.charAt(i) == '*'
+                                        && src.charAt(i + 1) == '/'
+                        )
                 ) {
                     i++;
                 }
@@ -218,7 +281,10 @@ public class YAParFileParser {
             }
 
             else {
-                sb.append(src.charAt(i++));
+
+                sb.append(src.charAt(i));
+
+                i++;
             }
         }
 
@@ -228,16 +294,22 @@ public class YAParFileParser {
     private static String readFile(String path)
             throws IOException {
 
-        StringBuilder sb = new StringBuilder();
+        StringBuilder sb =
+                new StringBuilder();
 
-        try (BufferedReader br =
-                     new BufferedReader(new FileReader(path))) {
+        try (
+                BufferedReader br =
+                        new BufferedReader(
+                                new FileReader(path)
+                        )
+        ) {
 
             String line;
 
             while ((line = br.readLine()) != null) {
 
-                sb.append(line).append("\n");
+                sb.append(line)
+                        .append("\n");
             }
         }
 

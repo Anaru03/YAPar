@@ -4,12 +4,6 @@ import java.io.*;
 import java.util.*;
 import runtime.Token;
 
-/**
- * YALexRunner
- *
- * IMPLEMENTADO CON AUTÓMATAS FINITOS
- * SIN java.util.regex
- */
 public class YALexRunner {
 
     private final List<String[]> rules =
@@ -26,9 +20,9 @@ public class YALexRunner {
 
     public YALexRunner() {}
 
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
     // API
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
 
     public void addRule(
             String token,
@@ -66,9 +60,9 @@ public class YALexRunner {
         return result;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // CARGA
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    // LOAD
+    // ─────────────────────────────────────────────
 
     public static YALexRunner fromFile(String path)
             throws IOException {
@@ -108,9 +102,9 @@ public class YALexRunner {
         return runner;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // VALIDACIÓN
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    // VALIDACIÓN CRUZADA
+    // ─────────────────────────────────────────────
 
     public List<String> validateAgainst(
             Set<String> yalpTokens
@@ -123,27 +117,44 @@ public class YALexRunner {
             lexerTokens.add(r[0]);
         }
 
-        List<String> missing =
+        List<String> errors =
                 new ArrayList<>();
 
         for (String t : yalpTokens) {
 
             if (
-                    !t.equals("$")
-                            && !t.equals("ε")
-                            && !lexerTokens.contains(t)
+                    t.equals("$")
+                            || t.equals("ε")
             ) {
+                continue;
+            }
 
-                missing.add(t);
+            if (!lexerTokens.contains(t)) {
+
+                errors.add(
+                        "[YALP -> YALEX] Token '" + t +
+                                "' declarado en .yalp NO existe en .yal"
+                );
             }
         }
 
-        return missing;
+        for (String t : lexerTokens) {
+
+            if (!yalpTokens.contains(t)) {
+
+                errors.add(
+                        "[YALEX -> YALP] Token '" + t +
+                                "' definido en .yal PERO no usado en .yalp"
+                );
+            }
+        }
+
+        return errors;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // PARSE .yal
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    // PARSER .YAL
+    // ─────────────────────────────────────────────
 
     private static void parseYalex(
             YALexRunner runner,
@@ -182,7 +193,7 @@ public class YALexRunner {
             }
 
             int braceOpen =
-                    alt.indexOf('{');
+                    alt.lastIndexOf('{');
 
             int braceClose =
                     alt.lastIndexOf('}');
@@ -207,6 +218,9 @@ public class YALexRunner {
             regex =
                     expandLets(regex, lets);
 
+            regex =
+                    normalizeRegex(regex);
+
             String token =
                     extractTokenName(action);
 
@@ -218,9 +232,40 @@ public class YALexRunner {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
+    // NORMALIZE
+    // ─────────────────────────────────────────────
+
+    private static String normalizeRegex(
+        String regex
+        ) {
+
+        regex = regex.trim();
+
+        // NO tocar character classes
+        if (regex.startsWith("["))
+                return regex;
+
+        // convertir SOLO literales individuales
+        // 'x' -> "x"
+
+        if (
+                regex.length() == 3
+                        && regex.charAt(0) == '\''
+                        && regex.charAt(2) == '\''
+        ) {
+
+                char c = regex.charAt(1);
+
+                return "\"" + c + "\"";
+        }
+
+        return regex;
+        }
+
+    // ─────────────────────────────────────────────
     // TOKENIZE
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
 
     public List<Token> tokenize(String input) {
 
@@ -344,9 +389,9 @@ public class YALexRunner {
         return tokens;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
     // BUILD DFA
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
 
     private void buildDFA() {
 
@@ -386,9 +431,7 @@ public class YALexRunner {
         dfaDirty = false;
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // HELPERS
-    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────
 
     private static String removeComments(String src) {
 
